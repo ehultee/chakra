@@ -62,7 +62,9 @@ class CalvingModel(FlowlineModel):
                  fs=0., inplace=False, fixed_dt=None, cfl_number=0.05,
                  min_dt=1*SEC_IN_HOUR, max_dt=10*SEC_IN_DAY,
                  time_stepping='user', flux_gate_thickness=None,
-                 flux_gate=None, flux_gate_build_up=500, **kwargs):
+                 flux_gate=None, flux_gate_build_up=500,
+                 apply_parameterization=None,
+                 **kwargs):
         """Instanciate the model.
 
         Parameters
@@ -108,12 +110,12 @@ class CalvingModel(FlowlineModel):
             thickness. If set to a high value, the model will slowly build it
             up in order not to force the model too much. Note that unrealistic
             values won't be met by the model, so this is really just a rough
-            help.
+            guidance. It's better to use `flux_gate` instead.
         flux_gate : float
-            a flux value (unit: m3 of ice per year). Will be overriden by
-            flux_gate_thickness if provided.
+            a flux value (unit: m3 of ice per second). This is overriden by
+            `flux_gate_thickness` if provided.
         flux_gate_buildup : int
-            number of years until the flux is reached
+            number of years used to build up the flux gate to full value
         mb_elev_feedback : str, default: 'annual'
             'never', 'always', 'annual', or 'monthly': how often the
             mass-balance should be recomputed from the mass balance model.
@@ -155,12 +157,13 @@ class CalvingModel(FlowlineModel):
         self.max_dt = max_dt
         self.cfl_number = cfl_number
 
-        # When switched on
-        self.simple_calving_m3_since_y0 = 0.  # total calving since time y0
+        # When simple param switched on this will updated
+        self.apply_parameterization = apply_parameterization
 
         # Flux gate
         self.flux_gate = flux_gate
         self.flux_gate_yr = flux_gate_build_up
+        self.flux_gate_volume = 0.
         if flux_gate_thickness is not None:
             # Compute the theoretical ice flux from the slope at the top
             fl = self.fls[-1]
@@ -172,6 +175,9 @@ class CalvingModel(FlowlineModel):
                                                           flux_gate_thickness,
                                                           glen_a=self.glen_a,
                                                           fs=self.fs)
+        if self.flux_gate is not None and len(self.fls) > 1:
+            raise ValueError('A flux gate doesnt make much sense with '
+                             'multiple flowlines.')
 
         # Memory optimisation and diagnostics
         self.slope_stag = []
@@ -260,7 +266,7 @@ class CalvingModel(FlowlineModel):
             # Add boundary condition
             if self.flux_gate is not None:
                 fac = 1 - (self.flux_gate_yr - self.yr) / self.flux_gate_yr
-                flux_stag[0] = self.flux_gate * np.clip(fac, 1e-4, 1)
+                flux_stag[0] = self.flux_gate * np.clip(fac, 0, 1)
 
             # CFL condition
             maxu = np.max(np.abs(u_stag))
@@ -312,6 +318,14 @@ class CalvingModel(FlowlineModel):
                 self.trib_flux[tr[0]][tr[1]:tr[2]] += (flx_stag[-1].clip(0) *
                                                        tr[3])
 
+            # If we use a flux-gate, store the total volume that came in
+            self.flux_gate_volume += flx_stag[0] * dt
+
+        # Apply some parameterization?
+        if self.apply_parameterization is not None:
+            # we give the object and time step as params
+            self.apply_parameterization(self, dt)
+
         # Next step
         self.t += dt
         return dt
@@ -331,8 +345,8 @@ class CalvingModel(FlowlineModel):
             - surface_h, bed_h, ice_tick, section_width: m
             - section_area: m2
             - slope: -
-            - ice_flux, tributary_flux: m3 of *ice* per year
-            - u: m per year
+            - ice_flux, tributary_flux: m3 of *ice* per second
+            - ice_velocity: m per second (depth-section integrated)
         """
 
         fl = self.fls[fl_id]
@@ -350,12 +364,12 @@ class CalvingModel(FlowlineModel):
         var = self.slope_stag[fl_id]
         df['slope'] = (var[1:nx+1] + var[:nx])/2
         var = self.flux_stag[fl_id]
-        df['ice_flux'] = (var[1:nx+1] + var[:nx])/2 * cfg.SEC_IN_YEAR
+        df['ice_flux'] = (var[1:nx+1] + var[:nx])/2
         var = self.u_stag[fl_id]
-        df['u'] = (var[1:nx+1] + var[:nx])/2 * cfg.SEC_IN_YEAR
+        df['ice_velocity'] = (var[1:nx+1] + var[:nx])/2
 
         # Not Staggered
-        df['tributary_flux'] = self.trib_flux[fl_id] * cfg.SEC_IN_YEAR
+        df['tributary_flux'] = self.trib_flux[fl_id]
 
         return df
 
@@ -387,7 +401,7 @@ class FixedMassBalance(MassBalanceModel):
 
 
 class WaterMassBalance(LinearMassBalance):
-    """MM as a linear function of altitude, and a fixed value underwater.
+    """MB as a linear function of altitude, and a fixed value underwater.
     """
 
     def __init__(self, ela_h, grad=3., max_mb=None, underwater_melt=0):
@@ -419,8 +433,8 @@ class WaterMassBalance(LinearMassBalance):
         return np.where(heights < 0, self.underwater_melt, mb)
 
 
-def dummy_tidewater_bed(gridsize=200, gridlength=6e4, widths_m=600,
-                        b_0=260, alpha=0.017, b_1=350, x_0=4e4, sigma=1e4):
+def bu_tidewater_bed(gridsize=200, gridlength=6e4, widths_m=600,
+                     b_0=260, alpha=0.017, b_1=350, x_0=4e4, sigma=1e4):
 
     dx_meter = gridlength / gridsize
     x = np.arange(gridsize+1) * dx_meter
