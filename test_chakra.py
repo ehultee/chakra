@@ -2,21 +2,21 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose
 
+import matplotlib.pyplot as plt
+
+
 # Local imports
-from oggm.core.massbalance import LinearMassBalance
+from oggm.core.massbalance import LinearMassBalance, ScalarMassBalance
 from oggm import utils, cfg
 
 # Tests
 from oggm.tests.funcs import dummy_constant_bed
+from oggm.tests.ext.sia_fluxlim import MUSCLSuperBeeModel
 
-import matplotlib.pyplot as plt
-from oggm.core.flowline import MUSCLSuperBeeModel
-
-from chakra import (CalvingModel, WaterMassBalance, FixedMassBalance,
-                    bu_tidewater_bed, find_sia_flux_from_thickness)
+from chakra import (KCalvingModel, WaterMassBalance, bu_tidewater_bed, ChakraModel)
 
 # set to true to see what's going on
-do_plot = False
+do_plot = True
 
 
 def setup_module(module):
@@ -32,7 +32,7 @@ def teardown_module(module):
 def test_numerics():
 
     # We test that our model produces similar results than Jarosh et al 2013.
-    models = [MUSCLSuperBeeModel, CalvingModel]
+    models = [MUSCLSuperBeeModel, ChakraModel]
 
     lens = []
     surface_h = []
@@ -92,40 +92,6 @@ def test_numerics():
     assert utils.rmsd(surface_h[0], surface_h[1]) < 1.0
 
 
-def test_find_flux_from_thickness():
-
-    mb = LinearMassBalance(2600.)
-    model = CalvingModel(dummy_constant_bed(), mb_model=mb)
-    model.run_until(700)
-
-    # Pick a flux and slope somewhere in the glacier
-    for i in [1, 10, 20, 50]:
-        flux = model.flux_stag[0][i]
-        slope = model.slope_stag[0][i]
-        thick = model.thick_stag[0][i]
-        width = model.fls[0].widths_m[i]
-
-        out = find_sia_flux_from_thickness(slope, width, thick)
-        assert_allclose(out, flux, atol=1e-7)
-
-
-def test_fixed_massbalance():
-
-    mb_mod = FixedMassBalance()
-    to_test = mb_mod.get_annual_mb([200, 100, 0, -1, -100])
-    # Convert units
-    to_test *= cfg.SEC_IN_YEAR * cfg.PARAMS['ice_density']
-    # Test
-    assert_allclose(to_test, [0, 0, 0, 0, 0])
-
-    mb_mod = FixedMassBalance(1000.)
-    to_test = mb_mod.get_annual_mb([200, 100])
-    # Convert units
-    to_test *= cfg.SEC_IN_YEAR * cfg.PARAMS['ice_density']
-    # Test
-    assert_allclose(to_test, [1000, 1000])
-
-
 def test_water_massbalance():
 
     mb_mod = LinearMassBalance(ela_h=100, grad=1)
@@ -172,12 +138,12 @@ def test_bu_bed():
 def test_flux_gate():
 
     # This is to check that we are conserving mass on a slab
-
+    # There are more tests in OGGM proper, this is just to play around
     fls = dummy_constant_bed()
-    mb_mod = FixedMassBalance()
+    mb_mod = ScalarMassBalance()
 
-    model = CalvingModel(fls, mb_model=mb_mod, flux_gate_thickness=150,
-                         check_for_boundaries=False)
+    model = ChakraModel(fls, mb_model=mb_mod, flux_gate_thickness=150,
+                        check_for_boundaries=False)
     model.run_until(3000)
 
     df = model.get_diagnostics()
@@ -203,17 +169,19 @@ def test_no_calving_will_error():
     # will eventually reach the domain boundary and error
 
     fls = bu_tidewater_bed()
-    mb_mod = FixedMassBalance()
+    mb_mod = ScalarMassBalance()
 
-    model = CalvingModel(fls, mb_model=mb_mod, flux_gate=0.07,
-                         fs=5.7e-20*4,  # quite slidy
-                         )
+    model = ChakraModel(fls, mb_model=mb_mod,
+                        flux_gate=0.07,
+                        fs=5.7e-20 * 4,  # quite slidy
+                        do_calving=False,
+                        )
 
     # Up to a certain stage its OK
     _, ds = model.run_until_and_store(6000)
 
     # Mass-conservation check
-    assert_allclose(model.flux_gate_volume, ds.volume_m3[-1])
+    assert_allclose(model.flux_gate_m3_since_y0, ds.volume_m3[-1])
 
     if do_plot:
         fl = model.fls[-1]
@@ -253,15 +221,20 @@ def test_underwater_melt():
     mb_mod = WaterMassBalance(ela_h=0, grad=2, max_mb=0,
                               underwater_melt=-2000)
 
-    model = CalvingModel(fls, mb_model=mb_mod, flux_gate=0.07,
-                         fs=5.7e-20*4,  # quite slidy
-                         )
+    model = ChakraModel(fls, mb_model=mb_mod,
+                        flux_gate=0.07,
+                        fs=5.7e-20 * 4,  # quite slidy
+                        do_calving=False,
+                        )
 
     # Up to 8000 years is OK
     _, ds = model.run_until_and_store(8000)
 
     # Mass-conservation check doesn't work here
-    assert model.flux_gate_volume != ds.volume_m3[-1]
+    assert model.flux_gate_m3_since_y0 != ds.volume_m3[-1]
+
+    # Glacier is much shorter
+    model.length_m < 35000
 
     if do_plot:
         fl = model.fls[-1]
@@ -287,46 +260,73 @@ def test_underwater_melt():
         plt.show()
 
 
-def test_simple_calving_param():
+def test_simple_chakra_param():
 
     # We make a very simple param for calving: when water depth is larger
     # than 100m, we simply bulk remove the ice as calving
 
     def simple_calving(model, dt):
-        """This is the func we give to the model.
+        """This is the calving param we give to the model.
 
         It will be called at each time step.
-        """
-        for fl in model.fls:
-            # Where to remove ice
-            loc_remove = np.nonzero(fl.bed_h < -100)
-            # How much will we remove
-            section = fl.section
-            vol_removed = np.sum(section[loc_remove] * fl.dx_meter)
-            # Effectively remove
-            section[loc_remove] = 0
-            fl.section = section
 
-            try:
-                model.simple_calving_volume += vol_removed
-            except AttributeError:
-                # this happens only the first time
-                model.simple_calving_volume = vol_removed
+        It needs to document:
+        model.calving_m3_since_y0
+        model.calving_rate_myr
+
+        And very likely also wants to update model.section (otherwise
+        nothing changes)
+        """
+
+        # We assume only one flowline (this is OK for now)
+        fl = model.fls[-1]
+
+        # Where to remove ice
+        loc_remove = np.nonzero(fl.bed_h < -100)[0]
+        # How much will we remove
+        section = fl.section
+        vol_removed = np.sum(section[loc_remove] * fl.dx_meter)
+        # Effectively remove mass
+        section[loc_remove] = 0
+
+        # Updates so that our parameterization actually does something
+        fl.section = section
+
+        # Total calved volume
+        model.calving_m3_since_y0 += vol_removed
+
+        # The following is a very silly way to compute calving rate,
+        # but the units are ok.
+
+        # Calving rate in units of meter per time
+        rate = vol_removed / fl.section[loc_remove[0] - 1]
+        # To units of m per year
+        model.calving_rate_myr = rate / dt * cfg.SEC_IN_YEAR
+
+        # This is a way for the programmer to add an attribute - here dummy one
+        try:
+            model.number_of_times_called += 1
+        except AttributeError:
+            # this happens only the first time
+            model.number_of_times_called = 1
 
     # See how it goes
     fls = bu_tidewater_bed()
-    mb_mod = FixedMassBalance()
-    model = CalvingModel(fls, mb_model=mb_mod, flux_gate=0.07,
-                         fs=5.7e-20*4,  # quite slidy
-                         apply_parameterization=simple_calving,
-                         )
+    mb_mod = ScalarMassBalance()
+    model = ChakraModel(fls, mb_model=mb_mod, flux_gate=0.07,
+                        fs=5.7e-20 * 4,  # quite slidy
+                        apply_parameterization=simple_calving,
+                        )
 
     # Up to a certain stage its OK
-    _, ds = model.run_until_and_store(6000)
+    _, ds = model.run_until_and_store(4000)
 
     # Mass-conservation check
-    assert_allclose(model.flux_gate_volume,
-                    ds.volume_m3[-1] + model.simple_calving_volume)
+    assert_allclose(model.flux_gate_m3_since_y0,
+                    ds.volume_m3[-1] + model.calving_m3_since_y0)
+
+    # Calving rate check
+    assert_allclose(ds.calving_rate_myr[-1], 26, atol=1)
 
     if do_plot:
         fl = model.fls[-1]
@@ -341,6 +341,9 @@ def test_simple_calving_param():
 
         plt.figure()
         ds.volume_m3.plot()
+
+        plt.figure()
+        ds.calving_rate_myr.plot()
 
         plt.figure()
         plt.plot(x, fl.bed_h, 'k')
