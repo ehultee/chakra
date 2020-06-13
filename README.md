@@ -47,9 +47,9 @@ free experience we recommend to use a dedicated conda environment (so that
 you can't break anything in the environments that work for you).
 
 The easiest way to install all necessary packages with conda is to
-copy the content of [this environment file](https://github.com/OGGM/r2d/blob/master/binder/environment.yml) 
+copy the content of [this environment file](https://docs.oggm.org/en/latest/installing-oggm.html#installation-troubleshooting) 
 into a text file, rename the environment to what suits you (in the linked 
-file the environment is simply called "oggm"), and run:
+file the environment is simply called "oggm_env"), and run:
 
     conda env create -f environment.yml
 
