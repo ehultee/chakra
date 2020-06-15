@@ -33,6 +33,19 @@ class PlasticGlacier(object):
         """
         self.yield_strength = yield_strength
     
+    def set_bed_function(x, bed_vals):
+        """Set up a continuous function of x describing subglacial topography
+
+        Parameters
+        ----------
+        x : array
+            Positions x (m/L0) along the flowline.
+        bed_vals : array
+            Bed elevation (m/H0) at each position x.
+        """
+        bf=interpolate.interp1d(x, bed_vals, 'linear')
+        self.bed_function = bf
+    
     def bingham_const(bed_elev=None, thick=None):
         """Functional form of constant Bingham number.
         Bingham number is nondimensional yield stress.
@@ -105,14 +118,12 @@ class PlasticGlacier(object):
             D = 0
         return (RHO_SEA/RHO_ICE)*D
 
-    def plastic_profile(bedfunction, Bfunction, startpoint, hinit, endpoint, npoints=1000):
+    def plastic_profile(Bfunction, startpoint, hinit, endpoint, npoints=1000):
         """Make a plastic glacier surface profile over given bed topography.
         
 
         Parameters
         ----------
-        bedfunction : function (1D)
-            Continuous function of bedrock topography.
         Bfunction : function (1D)
             Nondimensional yield function; bingham_const or bingham_var.
         startpoint : float
@@ -148,10 +159,10 @@ class PlasticGlacier(object):
         basearr = []
         
         SEarr.append(hinit)
-        thickarr.append(hinit-(bedfunction(startpoint)/H0))
-        basearr.append(bedfunction(startpoint)/H0)
+        thickarr.append(hinit-self.bed_function(startpoint))
+        basearr.append(self.bed_function(startpoint))
         for x in horiz[1::]:
-            bed = bedfunction(x)/H0  # value of interpolated bed function
+            bed = self.bed_function(x)  # value of interpolated bed function
             modelthick = thickarr[-1]
             B = Bfunction(bed, modelthick) # Bingham number at this position
             #Break statements for thinning below yield, water balance, or flotation
