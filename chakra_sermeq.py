@@ -33,7 +33,7 @@ class PlasticGlacier(object):
         """
         self.yield_strength = yield_strength
     
-    def set_bed_function(x, bed_vals):
+    def set_bed_function(self, x, bed_vals):
         """Set up a continuous function of x describing subglacial topography
 
         Parameters
@@ -46,7 +46,7 @@ class PlasticGlacier(object):
         bf=interpolate.interp1d(x, bed_vals, 'linear')
         self.bed_function = bf
     
-    def bingham_const(bed_elev=None, thick=None):
+    def bingham_const(self, bed_elev=None, thick=None):
         """Functional form of constant Bingham number.
         Bingham number is nondimensional yield stress.
 
@@ -60,7 +60,7 @@ class PlasticGlacier(object):
         """
         return self.yield_strength / (RHO_ICE*G*H0**2 /L0)
     
-    def bingham_var(bed_elev, thick, mu=0.01):
+    def bingham_var(self, bed_elev, thick, mu=0.01):
         """A spatially variable Bingham number
         Adjusts according to a Mohr-Coulomb basal yield condition.
         
@@ -85,7 +85,7 @@ class PlasticGlacier(object):
         tau_y = self.yield_strength + mu*N
         return tau_y/(RHO_ICE*G*H0**2/L0) 
 
-    def balance_thickness(bed_elev,B):
+    def balance_thickness(self, bed_elev,B):
         """Water balance ice thickness
 
         Parameters
@@ -107,7 +107,7 @@ class PlasticGlacier(object):
             D = 0
         return (2*B*H0/L0) + math.sqrt((RHO_SEA*(D**2)/RHO_ICE)+(H0*B/L0)**2)
     
-    def flotation_thickness(bed):
+    def flotation_thickness(self, bed):
         """Minimum ice thickness before flotation.
         Argument:
             bed is nondim bed value at point of interest
@@ -118,7 +118,7 @@ class PlasticGlacier(object):
             D = 0
         return (RHO_SEA/RHO_ICE)*D
 
-    def plastic_profile(Bfunction, startpoint, hinit, endpoint, npoints=1000):
+    def plastic_profile(self, Bfunction, startpoint, hinit, endpoint, npoints=1000):
         """Make a plastic glacier surface profile over given bed topography.
         
 
