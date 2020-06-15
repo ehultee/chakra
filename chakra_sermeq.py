@@ -9,6 +9,7 @@ Created on Mon Jun 15 13:55:02 2020
 """
 
 import numpy as np
+import math
 from scipy import interpolate
 
 ## Global constants
@@ -146,8 +147,8 @@ class PlasticGlacier(object):
                 Bed elevation (m/H0) at each point.
 
         """
-        horiz = linspace(startpoint, endpoint, npoints)
-        dx = mean(diff(horiz))
+        horiz = np.linspace(startpoint, endpoint, npoints)
+        dx = np.mean(np.diff(horiz))
     
         if dx<0:
             print('Detected: running from upglacier down to terminus.')
@@ -167,10 +168,10 @@ class PlasticGlacier(object):
             B = Bfunction(bed, modelthick) # Bingham number at this position
             #Break statements for thinning below yield, water balance, or flotation
             if dx<0:
-                if modelthick<balancethick(bed,B):
+                if modelthick<self.balance_thickness(bed,B):
                     print('Thinned below water balance at x={} km'.format(10*x))
                     break
-            if modelthick<flotationthick(bed):
+            if modelthick<self.flotation_thickness(bed):
                 print('Thinned below flotation at x= {} km'.format(10*x))
                 break
             if modelthick<4*B*H0/L0:
