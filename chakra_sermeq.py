@@ -150,9 +150,9 @@ class PlasticGlacier(object):
         horiz = np.linspace(startpoint, endpoint, npoints)
         dx = np.mean(np.diff(horiz))
     
-        if dx<0:
+        if dx>0:
             print('Detected: running from upglacier down to terminus.')
-        elif dx>0:
+        elif dx<0:
             print('Detected: running from terminus upstream.')
         
         SEarr = []
@@ -167,7 +167,7 @@ class PlasticGlacier(object):
             modelthick = thickarr[-1]
             B = Bfunction(bed, modelthick) # Bingham number at this position
             #Break statements for thinning below yield, water balance, or flotation
-            if dx<0:
+            if dx>0:
                 if modelthick<self.balance_thickness(bed,B):
                     print('Thinned below water balance at x={} km'.format(10*x))
                     break
@@ -179,7 +179,7 @@ class PlasticGlacier(object):
                 break
             else:
                 basearr.append(bed)
-                SEarr.append(SEarr[-1]+(B/modelthick)*dx) 
+                SEarr.append(SEarr[-1]-(B/modelthick)*dx) 
                 thickarr.append(SEarr[-1]-basearr[-1])
         
         return (horiz[0:len(SEarr)], SEarr, basearr)
