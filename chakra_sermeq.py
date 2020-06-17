@@ -183,4 +183,28 @@ class PlasticGlacier(object):
                 thickarr.append(SEarr[-1]-basearr[-1])
         
         return (horiz[0:len(SEarr)], SEarr, basearr)
+
+def glen_u(width, A=3.0e-25, basal_yield=150e3, surface_slope=0.2, thickness=500):
+    """Ideal Glen's-law mean velocity for a laterally confined glacier.
+
+    Parameters
+    ----------
+    width : float
+        Glacier width (m).
+    A : float, optional
+        Glen's A parameter (Pa s-1/3). Default is 3.0e-25.
+    basal_yield : float, optional
+        Basal yield strength (Pa), usually =ice strength.  Default is 150e3.
+    surface_slope : float, optional
+        Glacier surface slope (m/m).  Default is 0.2.
+    thickness : float, optional
+        Ice thickness (m).  Default is 500.
+
+    Returns
+    -------
+    Mean velocity (m s-1).
+    """
+    ## Centerline velocity u0:
+    u = A/2 * ((RHO_ICE * G * surface_slope - (basal_yield/thickness))**3) * (width/2)**4
     
+    return 0.6*u
