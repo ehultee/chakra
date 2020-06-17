@@ -11,6 +11,7 @@ Created on Mon Jun 15 13:55:02 2020
 import numpy as np
 import math
 from scipy import interpolate
+from oggm import cfg
 
 ## Global constants
 H0 = 1e3  # characteristic height for nondimensionalisation 
@@ -19,31 +20,99 @@ G = 9.8 # acceleration due to gravity in m/s^2
 RHO_ICE = 920.0 #ice density kg/m^3
 RHO_SEA = 1020.0 #seawater density kg/m^3
 
+def glen_u(width, A=3.0e-25, basal_yield=150e3, surface_slope=0.2, thickness=500):
+    """Ideal Glen's-law mean velocity for a laterally confined glacier.
+
+    Parameters
+    ----------
+    width : float
+        Glacier width (m).
+    A : float, optional
+        Glen's A parameter (Pa s-1/3). Default is 3.0e-25.
+    basal_yield : float, optional
+        Basal yield strength (Pa), usually =ice strength.  Default is 150e3.
+    surface_slope : float, optional
+        Glacier surface slope (m/m).  Default is 0.2.
+    thickness : float, optional
+        Ice thickness (m).  Default is 500.
+
+    Returns
+    -------
+    Mean velocity (m s-1).
+    """
+    ## Centerline velocity u0:
+    u = A/2 * ((RHO_ICE * G * surface_slope - (basal_yield/thickness))**3) * (width/2)**4
+    
+    return 0.6*u
 
 class PlasticGlacier(object):
     """A calving glacier with shape defined by plastic yielding at terminus.
     """
-    def __init__(self, yield_strength=150e3):
+    def __init__(self, yield_strength=150e3, width=500, basal_yield=150e3):
         """Initialize the glacier
 
         Parameters
         ----------
+        x : array, optional
+            Positions x (m/L0) along the flowline. Default initialized with PlasticGlacier
         yield_strength : float, optional
-            Yield strength of ice in Pa. The default is 150e3.
-
+            Yield strength of ice (Pa). The default is 150e3.
+        width : float, optional
+            Width of the glacier (m). The default is 500.
+        basal_yield : float, optional
+            Yield strength of basal substrate (Pa). The default is 150e3.
         """
         self.yield_strength = yield_strength
+        self.width = width
+        self.basal_yield = basal_yield
     
-    def set_bed_function(self, x, bed_vals):
+    def set_xvals(self, x):
+        """
+        Parameters
+        ----------
+        x : array
+             x values along flowline (m/L0).
+
+        Returns
+        -------
+        None.
+
+        """
+        self.xvals = x
+        
+    def set_bed_vals(self, bed_vals):
+        """
+        Parameters
+        ----------
+        bed_vals : array
+            bed elevation values along flowline (m/H0).
+
+        Returns
+        -------
+        None.
+
+        """
+        self.bed_vals = bed_vals
+    
+    def set_bed_function(self, x=None, bed_vals=None):
         """Set up a continuous function of x describing subglacial topography
 
         Parameters
         ----------
-        x : array
-            Positions x (m/L0) along the flowline.
+        x : array, optional
+            Positions x (m/L0) along the flowline. Default initialized with PlasticGlacier
         bed_vals : array
             Bed elevation (m/H0) at each position x.
         """
+        if x is None:
+            x = self.xvals
+        else:
+            self.set_xvals(x) #set to be sure function and xvals equivalent
+        if bed_vals is None:
+            bed_vals = self.bed_vals
+        else:
+            self.set_bed_vals(bed_vals)
+            
         bf=interpolate.interp1d(x, bed_vals, 'linear')
         self.bed_function = bf
     
@@ -183,28 +252,46 @@ class PlasticGlacier(object):
                 thickarr.append(SEarr[-1]-basearr[-1])
         
         return (horiz[0:len(SEarr)], SEarr, basearr)
-
-def glen_u(width, A=3.0e-25, basal_yield=150e3, surface_slope=0.2, thickness=500):
-    """Ideal Glen's-law mean velocity for a laterally confined glacier.
-
-    Parameters
-    ----------
-    width : float
-        Glacier width (m).
-    A : float, optional
-        Glen's A parameter (Pa s-1/3). Default is 3.0e-25.
-    basal_yield : float, optional
-        Basal yield strength (Pa), usually =ice strength.  Default is 150e3.
-    surface_slope : float, optional
-        Glacier surface slope (m/m).  Default is 0.2.
-    thickness : float, optional
-        Ice thickness (m).  Default is 500.
-
-    Returns
-    -------
-    Mean velocity (m s-1).
-    """
-    ## Centerline velocity u0:
-    u = A/2 * ((RHO_ICE * G * surface_slope - (basal_yield/thickness))**3) * (width/2)**4
     
-    return 0.6*u
+    def flux_evolve(self, times, flux, basal_yield=None):
+        """Simulate a response to changing influx over time
+
+        Parameters
+        ----------
+        times : array
+            Time steps to produce new profiles.
+        flux : function
+            Flux as a function of time.
+        basal_yield : float, optional
+            Strength of basal substrate (Pa). Default, inherited, is 150e3.
+
+        Returns
+        -------
+        xs: NDarray
+            plastic_profile x output (m) for each t in times.
+        bs : NDarray
+            plastic_profile bed output (m) for each t in times. 
+            (Not simulated, solely for plotting)
+        ss : NDarray
+            plastic_profile surface output (m) for each t in times
+        """
+        if basal_yield is None:
+            basal_yield = self.basal_yield
+            
+        xs, bs, ss =[], [], []
+        for t in times:
+            if t>times[0]: #put thickness from previous step in if available
+                u_in = glen_u(self.width, basal_yield, thickness=ss[-1][0]-bs[-1][0])  * cfg.SEC_IN_YEAR
+            else:
+                u_in = glen_u(self.width, basal_yield) * cfg.SEC_IN_YEAR
+            flux_balance_thickness = flux(t)/(u_in*self.width)
+            s = self.plastic_profile(Bfunction=self.bingham_const,
+                                     startpoint=min(self.xvals), endpoint=max(self.xvals),
+                                     hinit=(flux_balance_thickness/H0)+self.bed_function(min(self.xvals))
+                                     )
+            xs.append(L0*np.array(s[0]))
+            bs.append(H0*np.array(s[2]))
+            ss.append(H0*np.array(s[1]))
+            
+        return xs, bs, ss
+
