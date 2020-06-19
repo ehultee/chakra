@@ -260,96 +260,62 @@ def test_underwater_melt():
         plt.show()
 
 
-def test_simple_chakra_param():
-
-    # We make a very simple param for calving: when water depth is larger
-    # than 100m, we simply bulk remove the ice as calving
-
-    def simple_calving(model, dt):
-        """This is the calving param we give to the model.
-
-        It will be called at each time step.
-
-        It needs to document:
-        model.calving_m3_since_y0
-        model.calving_rate_myr
-
-        And very likely also wants to update model.section (otherwise
-        nothing changes)
-        """
-
-        # We assume only one flowline (this is OK for now)
-        fl = model.fls[-1]
-
-        # Where to remove ice
-        loc_remove = np.nonzero(fl.bed_h < -100)[0]
-        # How much will we remove
-        section = fl.section
-        vol_removed = np.sum(section[loc_remove] * fl.dx_meter)
-        # Effectively remove mass
-        section[loc_remove] = 0
-
-        # Updates so that our parameterization actually does something
-        fl.section = section
-
-        # Total calved volume
-        model.calving_m3_since_y0 += vol_removed
-
-        # The following is a very silly way to compute calving rate,
-        # but the units are ok.
-
-        # Calving rate in units of meter per time
-        rate = vol_removed / fl.section[loc_remove[0] - 1]
-        # To units of m per year
-        model.calving_rate_myr = rate / dt * cfg.SEC_IN_YEAR
-
-        # This is a way for the programmer to add an attribute - here dummy one
-        try:
-            model.number_of_times_called += 1
-        except AttributeError:
-            # this happens only the first time
-            model.number_of_times_called = 1
+def test_chakra_method_1():
 
     # See how it goes
-    fls = bu_tidewater_bed()
+    fls = bu_tidewater_bed(split_flowline_before_water=5)
+
     mb_mod = ScalarMassBalance()
-    model = ChakraModel(fls, mb_model=mb_mod, flux_gate=0.07,
-                        fs=5.7e-20 * 4,  # quite slidy
-                        apply_parameterization=simple_calving,
-                        )
+
+    flux_gate = 0.04
+    cfl_number = 0.01
+    glen_a = cfg.PARAMS['glen_a'] * 3
+
+    cm = ChakraModel(fls, mb_model=mb_mod,
+                     smooth_trib_influx=False,
+                     cfl_number=cfl_number,
+                     # enforce that all mass comes into first point
+                     flux_gate=flux_gate,
+                     # the default in OGGM is to add the fluxgate to each fl
+                     calving_use_limiter=True,
+                     glen_a=glen_a,
+                     yield_strength=50e3,
+                     )
+
+    om = KCalvingModel(bu_tidewater_bed(), mb_model=mb_mod,
+                       smooth_trib_influx=False,
+                       cfl_number=cfl_number,
+                       # enforce that all mass comes into first point
+                       flux_gate=flux_gate,
+                       # the default in OGGM is to add the fluxgate to each fl
+                       calving_use_limiter=True,
+                       glen_a=glen_a,
+                       calving_k=0.2,
+                       do_kcalving=True,
+                       is_tidewater=True
+                       )
 
     # Up to a certain stage its OK
-    _, ds = model.run_until_and_store(4000)
-
-    # Mass-conservation check
-    assert_allclose(model.flux_gate_m3_since_y0,
-                    ds.volume_m3[-1] + model.calving_m3_since_y0)
-
-    # Calving rate check
-    assert_allclose(ds.calving_rate_myr[-1], 26, atol=1)
+    _, dsc = cm.run_until_and_store(4000)
+    _, dso = om.run_until_and_store(4000)
 
     if do_plot:
-        fl = model.fls[-1]
-        x = fl.dis_on_line * fl.dx_meter
-        df = model.get_diagnostics()
+
+        fl = bu_tidewater_bed()[0]
+        xc = fl.dis_on_line * fl.dx_meter
+
+        dfc = cm.get_diagnostics(fl_id=0)
+        dfo = om.get_diagnostics(fl_id=0)
 
         plt.figure()
-        df[['ice_flux']].plot()
-
-        plt.figure()
-        (df[['ice_velocity']] * cfg.SEC_IN_YEAR).plot()
-
-        plt.figure()
-        ds.volume_m3.plot()
-
-        plt.figure()
-        ds.calving_rate_myr.plot()
-
-        plt.figure()
-        plt.plot(x, fl.bed_h, 'k')
-        plt.plot(x, fl.surface_h, 'C3')
-        plt.hlines(0, 0, 6e4, color='C0')
-        plt.ylim(-800, 1200)
-        plt.xlabel('[m]')
-        plt.ylabel('Elevation [m]')
+        f, ax = plt.subplots(1, 1, figsize=(12, 5))
+        ax.plot(xc, fl.bed_h, color='k')
+        dfo['surface_h'].plot(ax=ax, color='C2', label='OGGM', legend=False)
+        dfc['surface_h'].plot(ax=ax, color='C1', label='Chakra_OGGM', legend=False)
+        plt.plot(cm.plastic_coord, cm.plastic_surface, 'C3', label='Chakra_SERMeQ')
+        plt.hlines(0, *xc[[0, -1]], color='C0', linestyles=':')
+        plt.ylim(-350, 1000);
+        plt.ylabel('Altitude [m]');
+        plt.xlabel('Distance along flowline [km]');
+        plt.legend()
         plt.show()
