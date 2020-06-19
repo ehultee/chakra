@@ -41,7 +41,7 @@ def glen_u(width, A=3.0e-25, basal_yield=150e3, surface_slope=0.2, thickness=500
     Mean velocity (m s-1).
     """
     ## Centerline velocity u0:
-    u = A/2 * ((RHO_ICE * G * surface_slope - (basal_yield/thickness))**3) * (width/2)**4
+    u = (A/2) * ((RHO_ICE * G * surface_slope - (basal_yield/thickness))**3) * (width/2)**4
     
     return 0.6*u
 
@@ -277,13 +277,9 @@ class PlasticGlacier(object):
         """
         if basal_yield is None:
             basal_yield = self.basal_yield
-            
+        u_in = glen_u(self.width, basal_yield=basal_yield) * cfg.SEC_IN_YEAR
         xs, bs, ss =[], [], []
         for t in times:
-            if t>times[0]: #put thickness from previous step in if available
-                u_in = glen_u(self.width, basal_yield, thickness=ss[-1][0]-bs[-1][0])  * cfg.SEC_IN_YEAR
-            else:
-                u_in = glen_u(self.width, basal_yield) * cfg.SEC_IN_YEAR
             flux_balance_thickness = flux(t)/(u_in*self.width)
             s = self.plastic_profile(Bfunction=self.bingham_const,
                                      startpoint=min(self.xvals), endpoint=max(self.xvals),
