@@ -112,7 +112,7 @@ class PlasticGlacier(object):
 
         """
         self.bed_vals = bed_vals
-    
+   
     def set_bed_function(self, x=None, bed_vals=None):
         """Set up a continuous function of x describing subglacial topography
 
@@ -322,4 +322,3 @@ class PlasticGlacier(object):
             ucs.append(uc)
             
         return xs, bs, ss, ucs
-

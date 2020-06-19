@@ -23,6 +23,7 @@ from oggm.core.flowline import (FlowlineModel, RectangularBedFlowline,
                                 flux_gate_with_build_up)
 from oggm.core.inversion import find_sia_flux_from_thickness
 
+import chakra_sermeq
 
 class WaterMassBalance(LinearMassBalance):
     """MB as a linear function of altitude, and a fixed value underwater.
@@ -59,17 +60,36 @@ class WaterMassBalance(LinearMassBalance):
 
 def bu_tidewater_bed(gridsize=200, gridlength=6e4, widths_m=600,
                      b_0=260, alpha=0.017, b_1=350, x_0=4e4, sigma=1e4,
-                     water_level=0, split_flowline_before_water=None):
+                     water_level=0, split_flowline_before_water=None,
+                     with_spin_up=None):
 
     # Bassis & Ultee bed profile
     dx_meter = gridlength / gridsize
     x = np.arange(gridsize+1) * dx_meter
     bed_h = b_0 - alpha * x + b_1 * np.exp(-((x - x_0) / sigma)**2)
     bed_h += water_level
+
+    if with_spin_up is not None:
+        db = bed_h[0] - bed_h[1]
+        bed_s = np.arange(with_spin_up)[::-1] * db + bed_h[0] + db
+        bed_h = np.append(bed_s, bed_h)
+
     surface_h = bed_h
     widths = surface_h * 0. + widths_m / dx_meter
 
-    if split_flowline_before_water is not None:
+    if with_spin_up is not None:
+        fls = [RectangularBedFlowline(dx=1, map_dx=dx_meter,
+                                      surface_h=surface_h[:with_spin_up],
+                                      bed_h=bed_h[:with_spin_up],
+                                      widths=widths[:with_spin_up]),
+               RectangularBedFlowline(dx=1, map_dx=dx_meter,
+                                      surface_h=surface_h[with_spin_up:],
+                                      bed_h=bed_h[with_spin_up:],
+                                      widths=widths[with_spin_up:]),
+               ]
+        fls[0].set_flows_to(fls[1], check_tail=False, to_head=True)
+        return fls
+    elif split_flowline_before_water is not None:
         bs = np.min(np.nonzero(bed_h < 0)[0]) - split_flowline_before_water
         fls = [RectangularBedFlowline(dx=1, map_dx=dx_meter,
                                       surface_h=surface_h[:bs],
@@ -546,10 +566,7 @@ class KCalvingModel(FlowlineModel):
 
 
 class ChakraModel(KCalvingModel):
-    """A sandbox model where Chakra will be implemented.
-
-    It overrides the default model and simplifies it a bit to reduce the
-    number of parameters, etc.
+    """A sandbox model where Chakra=OGGM+Sermeq is implemented.
     """
 
     def __init__(self, flowlines, mb_model=None, y0=0.,
@@ -558,10 +575,8 @@ class ChakraModel(KCalvingModel):
                  flux_gate_thickness=None,
                  flux_gate=None,
                  flux_gate_build_up=100,
-                 do_calving=True,
                  water_level=None,
-                 is_tidewater=True,
-                 apply_parameterization=None,
+                 yield_strength=50e3,
                  **kwargs):
         """Instanciate the model.
 
@@ -636,27 +651,50 @@ class ChakraModel(KCalvingModel):
             way to get access to the model internals, but might not be enough
             for chakra. If not enough, just modify / adapt this code here.
         """
-        super(ChakraModel, self).__init__(flowlines, mb_model=mb_model,
+
+        # Chakra is OGGM flowline 1, Sermeq flowline 2
+        fl_flux = flowlines[0]
+        fl_calv = flowlines[1]
+        fl_flux.flows_to = None
+
+        self.plastic_x0 = (fl_flux.nx * fl_flux.dx_meter)
+
+        super(ChakraModel, self).__init__([fl_flux], mb_model=mb_model,
                                           y0=y0, glen_a=glen_a, fs=fs,
-                                          is_tidewater=is_tidewater,
+                                          is_tidewater=True,
                                           cfl_number=cfl_number,
-                                          do_kcalving=False,
+                                          check_for_boundaries=False,
+                                          do_kcalving=True,
                                           flux_gate_thickness=flux_gate_thickness,
                                           flux_gate=flux_gate,
                                           flux_gate_build_up=flux_gate_build_up,
                                           water_level=water_level,
                                           **kwargs)
 
-        # Let's keep things simple for now
-        if len(self.fls) > 1:
-            raise InvalidParamsError('Chakra wants only one flowline '
-                                     'for now.')
+        x = fl_calv.dis_on_line * fl_calv.dx_meter / 1000
+        self.x_nondim = x / (chakra_sermeq.L0 / 1000)  # x is in km, not m
+        bed_nondim = fl_calv.bed_h / chakra_sermeq.H0
 
-        # Here some chakra specific parameters
-        self.do_calving = do_calving
+        g = chakra_sermeq.PlasticGlacier(yield_strength=yield_strength)
+        g.set_bed_function(self.x_nondim, bed_nondim)
 
-        # When simple param switched on this will updated
-        self.apply_parameterization = apply_parameterization
+        self.plastic_g = g
+
+    def chakra_step(self, h_0):
+
+        if h_0 == 0:
+            return
+
+        g = self.plastic_g
+        h_0_c = h_0 / chakra_sermeq.H0
+
+        s_fx = g.plastic_profile(Bfunction=g.bingham_const,
+                                 startpoint=0, endpoint=max(self.x_nondim),
+                                 hinit=h_0_c + g.bed_function(0)
+                                 )
+
+        self.plastic_coord = self.plastic_x0 + 1e4 * np.array(s_fx[0])
+        self.plastic_surface = chakra_sermeq.H0 * np.array(s_fx[1])
 
     def step(self, dt):
         """Advance one step."""
@@ -724,7 +762,7 @@ class ChakraModel(KCalvingModel):
             N = self.glen_n
             rhogh = (self.rho * G * slope_stag) ** N
             u_stag[:] = (thick_stag ** (
-                        N + 1)) * self._fd * rhogh * sf_stag ** N + \
+                    N + 1)) * self._fd * rhogh * sf_stag ** N + \
                         (thick_stag ** (N - 1)) * self.fs * rhogh
 
             # Staggered section
@@ -741,7 +779,7 @@ class ChakraModel(KCalvingModel):
             # CFL condition
             if not self.fixed_dt:
                 maxu = np.max(np.abs(u_stag))
-                if maxu > 0.:
+                if maxu > cfg.FLOAT_EPS:
                     cfl_dt = self.cfl_number * dx / maxu
                 else:
                     cfl_dt = dt
@@ -792,7 +830,7 @@ class ChakraModel(KCalvingModel):
 
             # Update section with ice flow and mass balance
             new_section = (fl.section + (
-                        flx_stag[0:-1] - flx_stag[1:]) * dt / dx +
+                    flx_stag[0:-1] - flx_stag[1:]) * dt / dx +
                            trib_flux * dt / dx + mb)
 
             # Keep positive values only and store
@@ -808,22 +846,9 @@ class ChakraModel(KCalvingModel):
             # If we use a flux-gate, store the total volume that came in
             self.flux_gate_m3_since_y0 += flx_stag[0] * dt
 
-            # --- The space below is for calving only ---
-            # CHAKRA: ADD CODE HERE
-            # from this point onwards all ice deformation processes have
-            # been applied and the model is ready for the next time step.
-            # Something calving related could be coded here, or the other
-            # possibility is to use the "apply parameterisation"
-            # mechanism which is basically equivalent since it gives access
-            # to all object internals. In short, it is a matter of taste,
-            # but it also depends on how much chakra will mess around with
-            # the numerics, in which case coding here and messing around
-            # might be the better way to move forward.
-
-            # Apply some parameterization?
-            if self.apply_parameterization is not None:
-                # we give the object and time step as params
-                self.apply_parameterization(self, dt)
+            # --- This is for Chakra
+            if fl_id == 0 and int(self.yr / 10) == self.yr / 10:
+                self.chakra_step(fl.thick[-1])
 
         # Next step
         self.t += dt
