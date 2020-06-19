@@ -45,6 +45,25 @@ def glen_u(width, A=3.0e-25, basal_yield=150e3, surface_slope=0.2, thickness=500
     
     return 0.6*u
 
+def balance_calving_rate(flux, width, thickness=100):
+    """Calving rate out of a given terminus for given input flux
+
+    Parameters
+    ----------
+    flux : float
+        Ice influx in m3 a-1.
+    width : float
+        Glacier width (m).
+    thickness : float, optional
+        Ice thickness (m).  Default is 100.
+
+    Returns
+    -------
+    Balance calving rate (m a-1).
+    """
+    uc = flux / (width*thickness)
+    return uc
+
 class PlasticGlacier(object):
     """A calving glacier with shape defined by plastic yielding at terminus.
     """
@@ -93,7 +112,7 @@ class PlasticGlacier(object):
 
         """
         self.bed_vals = bed_vals
-    
+   
     def set_bed_function(self, x=None, bed_vals=None):
         """Set up a continuous function of x describing subglacial topography
 
@@ -188,7 +207,7 @@ class PlasticGlacier(object):
             D = 0
         return (RHO_SEA/RHO_ICE)*D
 
-    def plastic_profile(self, Bfunction, startpoint, hinit, endpoint, npoints=1000):
+    def plastic_profile(self, Bfunction, startpoint, hinit, endpoint, npoints=1000, verbose=False):
         """Make a plastic glacier surface profile over given bed topography.
         
 
@@ -202,8 +221,10 @@ class PlasticGlacier(object):
             Ice surface elevation at startpoint
         endpoint : float
             Point along flowline to stop integration, in m/L0.
-        npoints : float
+        npoints : float, optional
             Number of model points to use. Default is 1000.
+        verbose : Boolean, optional
+            Whether to print the condition that stopped model.  Default is False.
 
         Returns
         ------
@@ -218,11 +239,11 @@ class PlasticGlacier(object):
         """
         horiz = np.linspace(startpoint, endpoint, npoints)
         dx = np.mean(np.diff(horiz))
-    
-        if dx>0:
-            print('Detected: running from upglacier down to terminus.')
-        elif dx<0:
-            print('Detected: running from terminus upstream.')
+        if verbose:
+            if dx>0:
+                print('Detected: running from upglacier down to terminus.')
+            elif dx<0:
+                print('Detected: running from terminus upstream.')
         
         SEarr = []
         thickarr = []
@@ -236,15 +257,18 @@ class PlasticGlacier(object):
             modelthick = thickarr[-1]
             B = Bfunction(bed, modelthick) # Bingham number at this position
             #Break statements for thinning below yield, water balance, or flotation
-            if dx>0:
+            if dx>0: 
                 if modelthick<self.balance_thickness(bed,B):
-                    print('Thinned below water balance at x={} km'.format(10*x))
+                    if verbose:
+                        print('Thinned below water balance at x={} km'.format(10*x))
                     break
             if modelthick<self.flotation_thickness(bed):
-                print('Thinned below flotation at x= {} km'.format(10*x))
+                if verbose:
+                    print('Thinned below flotation at x= {} km'.format(10*x))
                 break
             if modelthick<4*B*H0/L0:
-                print('Thinned below yield at x={} km'.format(10*x))
+                if verbose:
+                    print('Thinned below yield at x={} km'.format(10*x))
                 break
             else:
                 basearr.append(bed)
@@ -274,20 +298,27 @@ class PlasticGlacier(object):
             (Not simulated, solely for plotting)
         ss : NDarray
             plastic_profile surface output (m) for each t in times
+        ucs : NDarray
+            balance calving rate (m a-1) for each timestep
         """
         if basal_yield is None:
             basal_yield = self.basal_yield
         u_in = glen_u(self.width, basal_yield=basal_yield) * cfg.SEC_IN_YEAR
-        xs, bs, ss =[], [], []
+        xs, bs, ss, ucs =[], [], [], []
         for t in times:
             flux_balance_thickness = flux(t)/(u_in*self.width)
             s = self.plastic_profile(Bfunction=self.bingham_const,
                                      startpoint=min(self.xvals), endpoint=max(self.xvals),
                                      hinit=(flux_balance_thickness/H0)+self.bed_function(min(self.xvals))
                                      )
+            # Compute calving rate if bed below sea level
+            if s[2][-1]<0: 
+                uc = balance_calving_rate(flux(t), self.width, thickness=H0*(s[1][-1]-s[2][-1]))
+            else:
+                uc = np.nan
             xs.append(L0*np.array(s[0]))
             bs.append(H0*np.array(s[2]))
             ss.append(H0*np.array(s[1]))
+            ucs.append(uc)
             
-        return xs, bs, ss
-
+        return xs, bs, ss, ucs
