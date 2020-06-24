@@ -67,23 +67,27 @@ def balance_calving_rate(flux, width, thickness=100):
 class PlasticGlacier(object):
     """A calving glacier with shape defined by plastic yielding at terminus.
     """
-    def __init__(self, yield_strength=150e3, width=500, basal_yield=150e3):
+    def __init__(self, yield_strength=150e3, width=500, 
+                 basal_yield=150e3, ice_yield_type='constant'):
         """Initialize the glacier
 
         Parameters
         ----------
         x : array, optional
-            Positions x (m/L0) along the flowline. Default initialized with PlasticGlacier
+            Positions x (m/L0) along the flowline. Default initialized with PlasticGlacier.
         yield_strength : float, optional
             Yield strength of ice (Pa). The default is 150e3.
         width : float, optional
             Width of the glacier (m). The default is 500.
         basal_yield : float, optional
             Yield strength of basal substrate (Pa). The default is 150e3.
+        ice_yield_type : string, optional
+            'constant' or 'variable' (Mohr-Coulomb) yield strength of ice.  Default constant.
         """
         self.yield_strength = yield_strength
         self.width = width
         self.basal_yield = basal_yield
+        self.ice_yield_type = ice_yield_type
     
     def set_xvals(self, x):
         """
@@ -135,43 +139,33 @@ class PlasticGlacier(object):
         bf=interpolate.interp1d(x, bed_vals, 'linear')
         self.bed_function = bf
     
-    def bingham_const(self, bed_elev=None, thick=None):
-        """Functional form of constant Bingham number.
-        Bingham number is nondimensional yield stress.
-
-        Parameters
-        ----------
-        Don't set. All necessary inherited.
-
-        Returns
-        -------
-        B : float 
-        """
-        return self.yield_strength / (RHO_ICE*G*H0**2 /L0)
-    
-    def bingham_var(self, bed_elev, thick, mu=0.01):
-        """A spatially variable Bingham number
-        Adjusts according to a Mohr-Coulomb basal yield condition.
+    def bingham_num(self, bed_elev=None, thick=None, mu=0.01):
+        """Functional form of Bingham number (nondimensional yield stress).
+        Interprets automatically whether we have constant or variable yield
+        for this the PlasticGlacier instance.
         
         Parameters
         ----------
-        bed_elev : float
-            Bed elevation, nondimensional (m/H0).
-        thick : float
-            Ice thickness, nondimensional (m/H0).
+        bed_elev : float, optional
+            Bed elevation, nondimensional (m/H0). The default is None.
+        thick : float, optional
+            Ice thickness, nondimensional (m/H0). The default is None.
         mu : float, optional
-            Cohesion, a coefficient between 0 and 1. Default is 0.01.
+            Mohr-Coulomb cohesion, a coefficient between 0 and 1. Default is 0.01.
 
         Returns
         -------
-        B : float
+        B: float
         """
-        if bed_elev<0:
-            D = -bed_elev #Water depth D the nondim bed topography value when Z<0
-        else:
-            D = 0
-        N = RHO_ICE*G*H0*thick - RHO_SEA*G*D*H0 #Normal stress at bed
-        tau_y = self.yield_strength + mu*N
+        if self.ice_yield_type=='variable':
+            if bed_elev<0:
+                D = -bed_elev #Water depth D the nondim bed topography value when Z<0
+            else:
+                D = 0
+            N = RHO_ICE*G*H0*thick - RHO_SEA*G*D*H0 #Normal stress at bed
+            tau_y = self.yield_strength + mu*N
+        else: #assume constant if not set
+            tau_y = self.yield_strength
         return tau_y/(RHO_ICE*G*H0**2/L0) 
 
     def balance_thickness(self, bed_elev,B):
@@ -207,14 +201,12 @@ class PlasticGlacier(object):
             D = 0
         return (RHO_SEA/RHO_ICE)*D
 
-    def plastic_profile(self, Bfunction, startpoint, hinit, endpoint, npoints=1000, verbose=False):
+    def plastic_profile(self, startpoint, hinit, endpoint, npoints=1000, verbose=False):
         """Make a plastic glacier surface profile over given bed topography.
         
 
         Parameters
         ----------
-        Bfunction : function (1D)
-            Nondimensional yield function; bingham_const or bingham_var.
         startpoint : float
             Point along flowline to start integration, in m/L0.
         hinit : float
@@ -255,7 +247,7 @@ class PlasticGlacier(object):
         for x in horiz[1::]:
             bed = self.bed_function(x)  # value of interpolated bed function
             modelthick = thickarr[-1]
-            B = Bfunction(bed, modelthick) # Bingham number at this position
+            B = self.bingham_num(bed, modelthick) # Bingham number at this position
             #Break statements for thinning below yield, water balance, or flotation
             if dx>0: 
                 if modelthick<self.balance_thickness(bed,B):
@@ -307,8 +299,7 @@ class PlasticGlacier(object):
         xs, bs, ss, ucs =[], [], [], []
         for t in times:
             flux_balance_thickness = flux(t)/(u_in*self.width)
-            s = self.plastic_profile(Bfunction=self.bingham_const,
-                                     startpoint=min(self.xvals), endpoint=max(self.xvals),
+            s = self.plastic_profile(startpoint=min(self.xvals), endpoint=max(self.xvals),
                                      hinit=(flux_balance_thickness/H0)+self.bed_function(min(self.xvals))
                                      )
             # Compute calving rate if bed below sea level
@@ -322,3 +313,6 @@ class PlasticGlacier(object):
             ucs.append(uc)
             
         return xs, bs, ss, ucs
+
+        
+        
